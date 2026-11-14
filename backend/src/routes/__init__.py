@@ -8,6 +8,7 @@ from src.routes.competitors import router as competitors_router
 from src.routes.exports import router as exports_router
 from src.routes.health import router as health_router
 from src.routes.overview import router as overview_router
+from src.routes.quarantines import router as quarantines_router
 from src.routes.rules import router as rules_router
 from src.routes.runs import router as runs_router
 from src.routes.skus import router as skus_router
@@ -21,6 +22,7 @@ api_router.include_router(competitors_router)
 api_router.include_router(skus_router)
 api_router.include_router(rules_router)
 api_router.include_router(snapshots_router)
+api_router.include_router(quarantines_router)
 api_router.include_router(runs_router)
 api_router.include_router(advices_router)
 api_router.include_router(exports_router)

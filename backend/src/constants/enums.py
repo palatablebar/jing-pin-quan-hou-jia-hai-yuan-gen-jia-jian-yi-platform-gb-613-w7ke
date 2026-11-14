@@ -160,3 +160,44 @@ COUPON_KIND_LABELS: dict[str, str] = {
     CouponKind.PLATFORM_COUPON.value: "平台券",
     CouponKind.MEMBER_DISCOUNT.value: "会员折扣",
 }
+
+
+class QuarantineStatus(StrEnum):
+    """坏快照隔离单状态：等待更正 → 已更正待重试 → 重试后闭环。"""
+
+    OPEN = "open"  # 已隔离，等待按正确券条款更正
+    CORRECTED = "corrected"  # 已更正快照，等待下次测算验证
+    RESOLVED = "resolved"  # 重试通过，已补出建议（或确认无需建议）
+    RE_ISOLATED = "re_isolated"  # 更正后仍非法，重新隔离
+
+
+QUARANTINE_STATUS_LABELS: dict[str, str] = {
+    QuarantineStatus.OPEN.value: "待更正",
+    QuarantineStatus.CORRECTED.value: "已更正待重试",
+    QuarantineStatus.RESOLVED.value: "已闭环",
+    QuarantineStatus.RE_ISOLATED.value: "更正后仍隔离",
+}
+
+QUARANTINE_STATUS_ORDER: list[str] = [
+    QuarantineStatus.OPEN.value,
+    QuarantineStatus.CORRECTED.value,
+    QuarantineStatus.RESOLVED.value,
+    QuarantineStatus.RE_ISOLATED.value,
+]
+
+
+class QuarantineOutcome(StrEnum):
+    """隔离单更正重试后的闭环结果。"""
+
+    ADVICE_FILLED = "advice_filled"  # 重试通过，缺的建议已补出
+    NO_ADVICE_NEEDED = "no_advice_needed"  # 重试通过，但规则判定无需跟价建议
+    STILL_INVALID = "still_invalid"  # 更正后仍无法通过算法 A
+    PENDING = "pending"  # 尚未重试
+
+
+QUARANTINE_OUTCOME_LABELS: dict[str, str] = {
+    QuarantineOutcome.ADVICE_FILLED.value: "已补建议",
+    QuarantineOutcome.NO_ADVICE_NEEDED.value: "无需建议",
+    QuarantineOutcome.STILL_INVALID.value: "更正后仍非法",
+    QuarantineOutcome.PENDING.value: "待重试",
+}

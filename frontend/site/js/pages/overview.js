@@ -56,7 +56,20 @@ export const overviewPage = {
         ${kpiTag({ label: '抓价快照', value: data.snapshots_total, suffix: '条', hint: `近 3 天，含券配置` })}
         ${kpiTag({ label: '待审批建议', value: data.pending_total, suffix: '条', hint: `累计 ${data.advices_total} 条`, tone: 'accent' })}
         ${kpiTag({ label: '高风险', value: data.high_risk_total, suffix: '条', hint: '破底价或毛利 < 5%', tone: data.high_risk_total ? 'danger' : '' })}
+        ${kpiTag({ label: '未闭环隔离', value: data.quarantine.open_total, suffix: '条', hint: `今日 ${data.quarantine.today_open} 条待更正，已闭环 ${data.quarantine.resolved_total} 条`, tone: data.quarantine.open_total ? 'danger' : '' })}
         ${kpiTag({ label: '平均价差', value: signedPct(data.avg_gap_pct), suffix: '', hint: `平均建议毛利 ${Number(data.avg_margin_pct).toFixed(2)}%`, tone: 'zinc' })}
+      </section>
+
+      <section class="panel" data-testid="pipeline-panel">
+        <div class="panel-head"><h2>最近测算数量核对</h2><span class="meta">输入 → 隔离 → 缺建议 → 已出建议</span></div>
+        <div class="panel-body">
+          <div class="stat-strip">
+            <div class="stat"><span class="k">输入快照</span><span class="v">${data.pipeline_counts.snapshots}</span><span class="hint">当日待测算 SKU 快照</span></div>
+            <div class="stat"><span class="k">未闭环隔离</span><span class="v">${data.pipeline_counts.quarantined_open}</span><span class="hint">坏快照锁死同货号当天</span></div>
+            <div class="stat"><span class="k">缺建议货号</span><span class="v">${data.pipeline_counts.missing_advice_skus}</span><span class="hint">更正重试后只补一次</span></div>
+            <div class="stat"><span class="k">已出建议</span><span class="v">${data.pipeline_counts.advices}</span><span class="hint">本次新补 ${data.pipeline_counts.new_advices} 条，其余沿用不重算</span></div>
+          </div>
+        </div>
       </section>
 
       <div class="grid-2">
@@ -109,6 +122,7 @@ export const overviewPage = {
                     <dt>快照日期</dt><dd>${fmtDate(latest.captured_on)}</dd>
                     <dt>状态</dt><dd><span class="badge ${latest.status === 'success' ? 'ok' : 'warn'}">${latest.status_label}</span></dd>
                     <dt>输入/产出</dt><dd class="mono">${latest.input_count} 快照 → ${latest.output_count} 条建议</dd>
+                    <dt>隔离/缺建议</dt><dd class="mono">未闭环 ${latest.quarantined_open ?? 0} · 缺建议 ${latest.missing_advice_skus ?? 0} · 新补 ${latest.new_advices ?? 0}</dd>
                     <dt>开始</dt><dd>${fmtTime(latest.started_at)}</dd>
                   </dl>
                   <div class="section-label" style="margin-top:14px">近 7 天新增建议</div>

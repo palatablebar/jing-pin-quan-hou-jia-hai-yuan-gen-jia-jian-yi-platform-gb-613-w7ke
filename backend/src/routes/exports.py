@@ -40,3 +40,13 @@ def runs_csv(
     principal: dict = Depends(require_roles(*EXPORT_ROLES)),
 ):
     return export_controller.runs_csv(db, principal, request)
+
+
+@router.get("/quarantines.csv")
+def quarantines_csv(
+    request: Request,
+    captured_on: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_roles(*EXPORT_ROLES)),
+):
+    return export_controller.quarantines_csv(db, captured_on, principal, request)

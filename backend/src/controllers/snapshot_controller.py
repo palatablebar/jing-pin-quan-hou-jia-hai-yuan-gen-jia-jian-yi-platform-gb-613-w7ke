@@ -8,9 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.models.snapshot import Snapshot
-from src.services import audit_service, effective_price, snapshot_service
+from src.services import audit_service, effective_price, quarantine_service, snapshot_service
 from src.utils.errors import AppError
-from src.utils.timeutil import utcnow
 
 
 def list_snapshots(db: Session, **filters) -> dict:
@@ -61,6 +60,10 @@ def create_snapshot(db: Session, payload: dict, principal: dict, request: Reques
     )
     db.add(snapshot)
     db.flush()
+    quarantine_record = None
+    if not result.get("valid"):
+        # 坏快照也入库（原输入不丢），同时落隔离单等待更正，不阻断其余流程
+        quarantine_record = quarantine_service.quarantine_snapshot(db, snapshot, result)
     audit_service.record(
         db,
         actor_email=principal["email"],
@@ -73,8 +76,11 @@ def create_snapshot(db: Session, payload: dict, principal: dict, request: Reques
             "captured_on": payload["captured_on"].isoformat() if isinstance(payload["captured_on"], date) else str(payload["captured_on"]),
             "unit_price_1": result.get("unit_price_1"),
             "valid": result.get("valid"),
+            "quarantined": quarantine_record is not None,
         },
         ip=request.client.host if request.client else None,
     )
     db.commit()
-    return snapshot_service.serialize(db, snapshot, principal["role"], detail=True)
+    return snapshot_service.serialize(
+        db, snapshot, principal["role"], detail=True, quarantine=quarantine_record
+    )

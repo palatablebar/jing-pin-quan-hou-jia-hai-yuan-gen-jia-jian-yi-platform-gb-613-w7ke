@@ -506,6 +506,15 @@ table.data td.num {
 }
 
 /* ---------- 徽标 / 标签 ---------- */
+.link {
+  color: var(--accent-deep);
+  text-decoration: none;
+  font-weight: 500;
+}
+.link:hover {
+  text-decoration: underline;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

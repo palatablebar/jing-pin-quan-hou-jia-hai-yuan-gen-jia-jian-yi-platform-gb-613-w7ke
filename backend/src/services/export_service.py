@@ -8,12 +8,15 @@ from src.constants.enums import (
     ADVICE_ACTION_LABELS,
     ADVICE_STATUS_LABELS,
     CATEGORY_LABELS,
+    QUARANTINE_OUTCOME_LABELS,
+    QUARANTINE_STATUS_LABELS,
     RISK_LABELS,
     RUN_STATUS_LABELS,
     TRIGGER_LABELS,
 )
 from src.models.advice import Advice
 from src.models.competitor import Competitor
+from src.models.quarantine import SnapshotQuarantine
 from src.models.run import Run
 from src.models.sku import Sku
 from src.models.snapshot import Snapshot
@@ -161,4 +164,55 @@ def runs_csv(db: Session) -> bytes:
         ]
         for run in runs
     ]
+    return to_csv(headers, rows)
+
+
+def quarantines_csv(db: Session, captured_on=None) -> bytes:
+    """隔离台账 CSV：每条隔离单可从失败原因追到更正结果与补出的建议。"""
+    stmt = select(SnapshotQuarantine)
+    if captured_on:
+        stmt = stmt.where(SnapshotQuarantine.captured_on == captured_on)
+    records = db.scalars(stmt.order_by(SnapshotQuarantine.id)).all()
+    skus = {row.id: row for row in db.scalars(select(Sku)).all()}
+    competitors = {row.id: row for row in db.scalars(select(Competitor)).all()}
+    runs = {row.id: row for row in db.scalars(select(Run)).all()}
+    headers = [
+        "隔离单号", "快照编号", "快照日期", "SKU编码", "SKU名称", "类目", "竞品店铺",
+        "隔离状态", "闭环结果", "失败原因", "原始页面价", "原始券条款",
+        "更正页面价", "更正券条款", "更正人", "更正时间", "重试次数",
+        "触发运行", "最近运行", "补出建议编号", "闭环时间",
+    ]
+    rows = []
+    for record in records:
+        sku = skus.get(record.sku_id)
+        competitor = competitors.get(record.competitor_id) if record.competitor_id else None
+        raw = record.raw_snapshot or {}
+        corrected = record.corrected_snapshot or {}
+        trigger_run = runs.get(record.run_id) if record.run_id else None
+        last_run = runs.get(record.last_run_id) if record.last_run_id else None
+        rows.append(
+            [
+                record.id,
+                record.snapshot_id,
+                record.captured_on.isoformat() if record.captured_on else "",
+                sku.sku_code if sku else "",
+                sku.name if sku else "",
+                CATEGORY_LABELS.get(sku.category, sku.category) if sku else "",
+                competitor.name if competitor else "",
+                QUARANTINE_STATUS_LABELS.get(record.status, record.status),
+                QUARANTINE_OUTCOME_LABELS.get(record.outcome, record.outcome),
+                (record.failure_reason or {}).get("message") or "",
+                raw.get("page_price", ""),
+                _coupon_text(raw),
+                corrected.get("page_price", ""),
+                _coupon_text(corrected) if corrected else "",
+                record.corrected_by or "",
+                record.corrected_at.strftime("%Y-%m-%d %H:%M") if record.corrected_at else "",
+                record.retry_count or 0,
+                trigger_run.run_no if trigger_run else "",
+                last_run.run_no if last_run else "",
+                record.advice_id or "",
+                record.resolved_at.strftime("%Y-%m-%d %H:%M") if record.resolved_at else "",
+            ]
+        )
     return to_csv(headers, rows)

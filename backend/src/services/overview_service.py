@@ -17,9 +17,11 @@ from src.constants.enums import (
 )
 from src.models.advice import Advice
 from src.models.competitor import Competitor
+from src.models.quarantine import SnapshotQuarantine
 from src.models.run import Run
 from src.models.sku import Sku
 from src.models.snapshot import Snapshot
+from src.constants.enums import QuarantineStatus
 from src.utils.timeutil import local_now, utcnow
 
 
@@ -117,6 +119,46 @@ def overview(db: Session) -> dict:
     latest_run = db.scalar(select(Run).order_by(Run.id.desc()).limit(1))
     since = utcnow() - timedelta(days=7)
     recent = db.scalars(select(Advice).where(Advice.created_at >= since)).all()
+
+    # 隔离台账：全量 + 最新快照日，用于页面核对「输入 / 隔离 / 已出建议」
+    quarantine_total = db.scalar(select(func.count()).select_from(SnapshotQuarantine)) or 0
+    quarantine_open = (
+        db.scalar(
+            select(func.count())
+            .select_from(SnapshotQuarantine)
+            .where(SnapshotQuarantine.status.in_([s.value for s in QuarantineStatus if s.value != "resolved"]))
+        )
+        or 0
+    )
+    quarantine_resolved = (
+        db.scalar(
+            select(func.count())
+            .select_from(SnapshotQuarantine)
+            .where(SnapshotQuarantine.status == QuarantineStatus.RESOLVED.value)
+        )
+        or 0
+    )
+    quarantine_filled = (
+        db.scalar(
+            select(func.count())
+            .select_from(SnapshotQuarantine)
+            .where(SnapshotQuarantine.advice_id.is_not(None))
+        )
+        or 0
+    )
+    quarantine_today_open = (
+        db.scalar(
+            select(func.count())
+            .select_from(SnapshotQuarantine)
+            .where(
+                SnapshotQuarantine.captured_on == latest_day,
+                SnapshotQuarantine.status.in_([s.value for s in QuarantineStatus if s.value != "resolved"]),
+            )
+        )
+        if latest_day
+        else 0
+    ) or 0
+    latest_metrics = (latest_run.metrics or {}) if latest_run else {}
     today = local_now().date()
     trend = []
     for offset in range(6, -1, -1):
@@ -141,6 +183,21 @@ def overview(db: Session) -> dict:
         "avg_discount_pct": avg_discount,
         "latest_capture_on": latest_day.isoformat() if isinstance(latest_day, date) else None,
         "worker_alive": worker_alive(),
+        "quarantine": {
+            "total": quarantine_total,
+            "open_total": quarantine_open,
+            "resolved_total": quarantine_resolved,
+            "advice_filled": quarantine_filled,
+            "today_open": quarantine_today_open,
+        },
+        "pipeline_counts": {
+            # 页面核对用：输入快照 → 未闭环隔离 → 当日缺建议 → 已出建议
+            "snapshots": latest_metrics.get("snapshots", 0),
+            "quarantined_open": latest_metrics.get("quarantined_open", quarantine_today_open),
+            "missing_advice_skus": latest_metrics.get("missing_advice_skus", 0),
+            "advices": latest_metrics.get("advices", latest_run.output_count if latest_run else 0),
+            "new_advices": latest_metrics.get("new_advices", 0),
+        },
         "risk": [
             {"key": key, "label": RISK_LABELS.get(key, key), "count": risk_map.get(key, 0)}
             for key in [RiskLevel.HIGH.value, RiskLevel.MEDIUM.value, RiskLevel.LOW.value]
@@ -161,6 +218,9 @@ def overview(db: Session) -> dict:
             "started_at": latest_run.started_at.isoformat(timespec="seconds") + "Z" if latest_run.started_at else None,
             "input_count": latest_run.input_count,
             "output_count": latest_run.output_count,
+            "missing_advice_skus": latest_metrics.get("missing_advice_skus", 0),
+            "quarantined_open": latest_metrics.get("quarantined_open", 0),
+            "new_advices": latest_metrics.get("new_advices", 0),
         }
         if latest_run
         else None,

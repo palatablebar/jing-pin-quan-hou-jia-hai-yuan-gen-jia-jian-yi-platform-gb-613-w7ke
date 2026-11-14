@@ -155,3 +155,32 @@ CREATE INDEX idx_advices_status ON advices (status);
 CREATE INDEX idx_advices_severity ON advices (severity);
 CREATE INDEX idx_snapshots_day ON snapshots (captured_on);
 CREATE INDEX idx_rules_priority ON rules (priority);
+
+-- 坏快照隔离单：原输入留档 + 失败原因 + 更正重试 + 闭环结果（同货号当天唯一）
+CREATE TABLE snapshot_quarantines (
+    id              SERIAL PRIMARY KEY,
+    snapshot_id     INTEGER      NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    sku_id          INTEGER      NOT NULL REFERENCES skus(id) ON DELETE CASCADE,
+    competitor_id   INTEGER      REFERENCES competitors(id) ON DELETE SET NULL,
+    captured_on     DATE         NOT NULL,
+    raw_snapshot    JSON         NOT NULL,
+    failure_reason  JSON         NOT NULL,
+    run_id          INTEGER      REFERENCES runs(id) ON DELETE SET NULL,
+    last_run_id     INTEGER      REFERENCES runs(id) ON DELETE SET NULL,
+    status          VARCHAR(20)  NOT NULL DEFAULT 'open',
+    outcome         VARCHAR(24)  NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER      NOT NULL DEFAULT 0,
+    corrected_snapshot JSON,
+    corrected_by    VARCHAR(160),
+    corrected_at    TIMESTAMP,
+    advice_id       INTEGER      REFERENCES advices(id) ON DELETE SET NULL,
+    resolved_at     TIMESTAMP,
+    note            TEXT,
+    created_at      TIMESTAMP    NOT NULL,
+    updated_at      TIMESTAMP    NOT NULL,
+    CONSTRAINT uq_quarantine_snapshot UNIQUE (snapshot_id),
+    CONSTRAINT uq_quarantine_sku_day UNIQUE (sku_id, captured_on)
+);
+
+CREATE INDEX idx_quarantine_status ON snapshot_quarantines (status);
+CREATE INDEX idx_quarantine_day ON snapshot_quarantines (captured_on);

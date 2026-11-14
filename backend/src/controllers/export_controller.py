@@ -58,3 +58,19 @@ def runs_csv(db: Session, principal: dict, request: Request) -> Response:
     )
     db.commit()
     return _respond(content, "pricewatch-runs.csv")
+
+
+def quarantines_csv(db: Session, captured_on, principal: dict, request: Request) -> Response:
+    content = export_service.quarantines_csv(db, captured_on)
+    audit_service.record(
+        db,
+        actor_email=principal["email"],
+        actor_role=principal["role"],
+        action="export.snapshots",
+        entity="quarantine",
+        entity_id=None,
+        detail={"bytes": len(content), "captured_on": captured_on.isoformat() if captured_on else None},
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
+    return _respond(content, "pricewatch-quarantines.csv")

@@ -21,8 +21,9 @@ export const NAV = [
   { to: '#/overview', no: '01', label: '总览', permission: 'overview:read' },
   { to: '#/catalog', no: '02', label: '竞品与 SKU', permission: 'sku:read' },
   { to: '#/snapshots', no: '03', label: '抓价快照', permission: 'snapshot:read' },
-  { to: '#/advices', no: '04', label: '跟价建议', permission: 'advice:read' },
-  { to: '#/exports', no: '05', label: '导出与审计', permission: 'overview:read' },
+  { to: '#/quarantine', no: '04', label: '坏快照隔离', permission: 'quarantine:read' },
+  { to: '#/advices', no: '05', label: '跟价建议', permission: 'advice:read' },
+  { to: '#/exports', no: '06', label: '导出与审计', permission: 'overview:read' },
 ];
 
 export const ROLE_LABELS = {
@@ -38,12 +39,13 @@ export const PERMISSIONS = {
     'sku:read', 'sku:write',
     'rule:read', 'rule:write',
     'snapshot:read',
+    'quarantine:read',
     'run:read', 'run:create',
     'advice:read', 'advice:decide',
     'export:read', 'audit:read',
   ],
-  analyst: ['overview:read', 'competitor:read', 'sku:read', 'rule:read', 'snapshot:read', 'run:read', 'run:create', 'advice:read'],
-  viewer: ['overview:read', 'competitor:read', 'sku:read', 'rule:read', 'snapshot:read', 'run:read', 'advice:read'],
+  analyst: ['overview:read', 'competitor:read', 'sku:read', 'rule:read', 'snapshot:read', 'quarantine:read', 'run:read', 'run:create', 'advice:read'],
+  viewer: ['overview:read', 'competitor:read', 'sku:read', 'rule:read', 'snapshot:read', 'quarantine:read', 'run:read', 'advice:read'],
 };
 
 /* 共享枚举：与 backend/src/constants/enums.py 同步（README「共享枚举出现位置」） */
@@ -95,7 +97,32 @@ export const ENUMS = {
     schedule: '定时',
     seed: '初始化',
   },
+  quarantineStatus: {
+    open: '待更正',
+    corrected: '已更正待重试',
+    resolved: '已闭环',
+    re_isolated: '更正后仍隔离',
+  },
+  quarantineOutcome: {
+    pending: '待重试',
+    advice_filled: '已补建议',
+    no_advice_needed: '无需建议',
+    still_invalid: '更正后仍非法',
+  },
 };
+
+export function quarantineStatusTone(status) {
+  return { open: 'danger', re_isolated: 'danger', corrected: 'warn', resolved: 'ok' }[status] || 'info';
+}
+
+export function quarantineOutcomeTone(outcome) {
+  return {
+    advice_filled: 'ok',
+    no_advice_needed: 'info',
+    still_invalid: 'danger',
+    pending: 'warn',
+  }[outcome] || 'info';
+}
 
 export function can(role, permission) {
   return (PERMISSIONS[role] || []).includes(permission);

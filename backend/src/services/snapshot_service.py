@@ -6,13 +6,24 @@ from datetime import date
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from src.constants.enums import CATEGORY_LABELS, PLATFORM_LABELS
+from src.constants.enums import CATEGORY_LABELS, PLATFORM_LABELS, QUARANTINE_STATUS_LABELS
 from src.models.competitor import Competitor
+from src.models.quarantine import SnapshotQuarantine
 from src.models.sku import Sku
 from src.models.snapshot import Snapshot
 from src.services import effective_price
 from src.utils.errors import not_found
 from src.utils.timeutil import iso_utc
+
+
+def quarantine_map(db: Session, snapshot_ids: list[int]) -> dict[int, SnapshotQuarantine]:
+    """按快照 id 批量取未闭环隔离单，避免列表 N+1。"""
+    if not snapshot_ids:
+        return {}
+    rows = db.scalars(
+        select(SnapshotQuarantine).where(SnapshotQuarantine.snapshot_id.in_(snapshot_ids))
+    ).all()
+    return {row.snapshot_id: row for row in rows}
 
 
 def spec_of(snapshot: Snapshot) -> dict:
@@ -25,7 +36,14 @@ def spec_of(snapshot: Snapshot) -> dict:
     }
 
 
-def serialize(db: Session, snapshot: Snapshot, role: str = "viewer", *, detail: bool = False) -> dict:
+def serialize(
+    db: Session,
+    snapshot: Snapshot,
+    role: str = "viewer",
+    *,
+    detail: bool = False,
+    quarantine: SnapshotQuarantine | None = None,
+) -> dict:
     sku = db.get(Sku, snapshot.sku_id)
     competitor = db.get(Competitor, snapshot.competitor_id) if snapshot.competitor_id else None
     effective = snapshot.effective or {}
@@ -58,12 +76,27 @@ def serialize(db: Session, snapshot: Snapshot, role: str = "viewer", *, detail: 
         "note": effective.get("note"),
         "valid": effective.get("valid", False),
         "warnings": effective.get("warnings") or [],
+        "quarantined": quarantine is not None and quarantine.status != "resolved",
+        "quarantine_id": quarantine.id if quarantine else None,
+        "quarantine_status": quarantine.status if quarantine else None,
+        "quarantine_status_label": (
+            QUARANTINE_STATUS_LABELS.get(quarantine.status, quarantine.status) if quarantine else None
+        ),
         "captured_at": iso_utc(snapshot.created_at),
     }
     if detail:
         data["effective"] = effective
         data["page_total_n2"] = round(snapshot.page_price * 2, 2)
         data["page_total_n3"] = round(snapshot.page_price * 3, 2)
+        if quarantine is not None:
+            data["quarantine"] = {
+                "id": quarantine.id,
+                "status": quarantine.status,
+                "status_label": QUARANTINE_STATUS_LABELS.get(quarantine.status, quarantine.status),
+                "outcome": quarantine.outcome,
+                "failure_message": (quarantine.failure_reason or {}).get("message"),
+                "retry_count": quarantine.retry_count or 0,
+            }
     return data
 
 
@@ -109,8 +142,9 @@ def list_snapshots(
         count_stmt = count_stmt.where(condition)
     total = db.scalar(count_stmt) or 0
     rows = db.scalars(stmt.order_by(Snapshot.captured_on.desc(), Snapshot.id.desc()).limit(limit).offset(offset)).all()
+    qmap = quarantine_map(db, [row.id for row in rows])
     return {
-        "items": [serialize(db, row, role) for row in rows],
+        "items": [serialize(db, row, role, quarantine=qmap.get(row.id)) for row in rows],
         "total": total,
         "limit": limit,
         "offset": offset,

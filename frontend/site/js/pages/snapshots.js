@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { ENUMS, can, optionList } from '../config.js';
+import { ENUMS, can, optionList, quarantineStatusTone } from '../config.js';
 import { drawer, errorBox, errorMessage, esc, field, filterBar, kv, table, toast } from '../ui.js';
 import { couponText, money, priceCompare, signedPct } from '../components/price.js';
 
@@ -38,7 +38,12 @@ function openSnapshot(view, ctx, item) {
         ['会员折扣', item.member_discount < 1 ? `${Math.round(item.member_discount * 100)}%` : '非会员价'],
         ['活动', esc(item.campaign || '—')],
         ['库存', esc(item.stock)],
-        ['算法 A 结论', esc(item.note || '—')],
+        [
+          '算法 A 结论',
+          item.quarantined
+            ? `<span class="badge danger">${esc(item.quarantine_status_label || '隔离中')}</span> <a class="link" href="#/quarantine">去隔离台更正</a>`
+            : esc(item.note || '—'),
+        ],
         ['置信度', `${item.valid ? '0.99' : '0.00'}${(item.warnings || []).length ? ` · ${esc(item.warnings.join('；'))}` : ''}`],
       ])}
       <div class="section-label">按件数拆解（算法 A 明细）</div>
@@ -50,6 +55,7 @@ function openSnapshot(view, ctx, item) {
 export const snapshotsPage = {
   async render(view, ctx) {
     let data;
+    let qStats = { open_total: 0, pending_correction: 0, corrected_waiting_retry: 0 };
     try {
       data = await api.get('/api/snapshots', {
         captured_on: state.capturedOn,
@@ -65,17 +71,29 @@ export const snapshotsPage = {
     }
     const days = data.capture_days || [];
     if (!state.capturedOn && days.length) state.capturedOn = days[0];
+    try {
+      qStats = await api.get('/api/quarantines/stats', { captured_on: state.capturedOn || undefined });
+    } catch {
+      qStats = { open_total: 0 };
+    }
     const competitors = await api.get('/api/competitors', { limit: 20 }).catch(() => ({ items: [] }));
+    const quarantinedRows = data.items.filter((row) => row.quarantined).length;
     view.innerHTML = `
       <section class="panel">
         <div class="panel-head">
           <h2>抓价快照 · 页面价 vs 券后价</h2>
           <div class="head-actions">
-            <span class="meta">${data.total} 条快照 · 快照日 ${days.length} 天</span>
+            <span class="meta">${data.total} 条快照 · 快照日 ${days.length} 天 · 未闭环隔离 ${qStats.open_total ?? 0} 条</span>
             ${can(ctx.user.role, 'run:create') ? '<button class="btn sm accent" id="run-calc">重跑今天测算</button>' : ''}
           </div>
         </div>
         <div class="panel-body">
+          <div class="stat-strip" data-testid="snapshot-pipeline">
+            <div class="stat"><span class="k">本页输入快照</span><span class="v">${data.total}</span><span class="hint">含坏快照，原输入不丢</span></div>
+            <div class="stat"><span class="k">隔离中</span><span class="v">${qStats.open_total ?? 0}</span><span class="hint">待更正 ${qStats.pending_correction ?? 0} · 待重试 ${qStats.corrected_waiting_retry ?? 0}</span></div>
+            <div class="stat"><span class="k">列表内隔离行</span><span class="v">${quarantinedRows}</span><span class="hint">带红色隔离标记</span></div>
+            <div class="stat"><span class="k">合格快照</span><span class="v">${data.total - quarantinedRows}</span><span class="hint">算法 A 已还原券后价</span></div>
+          </div>
           ${filterBar('snap-filters', [
             field({ label: '快照日期', name: 'captured_on', value: state.capturedOn, options: days.map((day) => ({ value: day, label: day })) }),
             field({ label: '类目', name: 'category', value: state.category, options: optionList(ENUMS.category) }),
@@ -98,6 +116,14 @@ export const snapshotsPage = {
               render: (row) =>
                 `<b>${esc(row.sku_name)}</b><div class="mono muted">${esc(row.sku_code)} · ${esc(row.competitor_name || '—')}</div>`,
             },
+            {
+              key: 'status',
+              label: '状态',
+              render: (row) =>
+                row.quarantined
+                  ? `<span class="badge ${quarantineStatusTone(row.quarantine_status)}" data-testid="quarantine-badge">${esc(row.quarantine_status_label || '隔离中')}</span>`
+                  : '<span class="badge ok">合格</span>',
+            },
             { key: 'page_price', label: '页面价', className: 'num money', render: (row) => money(row.page_price) },
             { key: 'unit_price_1', label: '券后 1 件', className: 'num money', render: (row) => money(row.unit_price_1) },
             { key: 'unit_price_2', label: '券后 2 件', className: 'num money', render: (row) => money(row.unit_price_2) },
@@ -110,8 +136,11 @@ export const snapshotsPage = {
             },
             {
               key: 'note',
-              label: '命中组合',
-              render: (row) => `<span class="mono muted ellipsis">${esc(row.note || '—')}</span>`,
+              label: '命中组合 / 隔离原因',
+              render: (row) =>
+                row.quarantined
+                  ? `<a class="link" href="#/quarantine" data-quarantine-id="${esc(row.quarantine_id)}">查看隔离单 #${esc(row.quarantine_id)}</a>`
+                  : `<span class="mono muted ellipsis">${esc(row.note || '—')}</span>`,
             },
           ],
         })}
@@ -147,7 +176,10 @@ export const snapshotsPage = {
       button.textContent = '测算中…';
       try {
         const run = await api.post('/api/runs', { captured_on: state.capturedOn || undefined, trigger: 'manual' });
-        toast(`测算完成 ${run.run_no}：${run.metrics.snapshots} 条快照 → ${run.metrics.advices} 条建议`);
+        const m = run.metrics || {};
+        toast(
+          `${run.run_no}：输入 ${m.snapshots ?? 0} 条 → 建议 ${m.advices ?? 0} 条（新补 ${m.new_advices ?? 0}、沿用 ${m.skipped_existing_advices ?? 0}），隔离未闭环 ${m.quarantined_open ?? 0}、缺建议 ${m.missing_advice_skus ?? 0}`,
+        );
         await snapshotsPage.render(view, ctx);
       } catch (err) {
         toast(errorMessage(err), 'err');

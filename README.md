@@ -12,14 +12,15 @@
   3. 没有依据链：跟了哪一档、依据哪天哪条快照、谁批的，吵架时说不清。
 - **上下游**：竞品店铺页面（RPA 抓价，`capture_config.replay` 指向 fixture 回放）→ **本系统**（抓价快照入库 → 券后价还原 → 跟价建议 → 审批 → 改价单/导出）→ 电商后台改价 + 定价组日报。
 - **一天的工作剧本**：
-  1. 08:00 定时任务回放当天 320 条抓价快照（`campaign=618 现货`），失败快照进 `invalid_snapshots`。
-  2. 08:01 算法 A 把每条快照按 1/2/3 件还原成券后单价，写入 `snapshots.effective`。
-  3. 08:02 算法 B 对每个 SKU 取对标竞品近 3 天券后单件价的分位数，套用命中的跟价规则算出建议价。
+  1. 08:00 定时任务回放当天 320 条抓价快照（`campaign=618 现货`），券条款写错的快照不丢弃：原样入库并进「坏快照隔离」（`snapshot_quarantines`，原输入留档、记录失败原因，同货号当天只锁一条）。
+  2. 08:01 算法 A 把每条快照按 1/2/3 件还原成券后单价，写入 `snapshots.effective`；失败的隔离单在页面可见，运营按正确券条款更正，重算通过后等重试。
+  3. 08:02 算法 B 对每个 SKU 取对标竞品近 3 天券后单件价的分位数，套用命中的跟价规则算出建议价；被隔离货号当天不出建议（`missing_advice_skus`），其余建议照常发布。
   4. 08:05 定价主管打开「跟价建议」，先看 9 条高风险（竞品券后价已破我方底价）。
   5. 09:00 主管对 `PB-sofa-001` 批准改价 ¥284.58（竞品 P25 ¥279.00，毛利 32.74%）。
   6. 10:30 驳回 2 条降幅 > 15% 的建议，备注「等 618 结束再跟」。
-  7. 18:00 导出「跟价建议清单 CSV」给店长群，附券后 1/2/3 件价格与命中组合。
-  8. 20:00 晚班运营再跑一次测算，对比早晚价差，审计日志留痕。
+  7. 更正隔离快照后重跑同一测算：合格建议不重算、不重复，缺的只补一次（`new_advices` / `skipped_existing_advices`），隔离单闭环并关联补出的建议（`advice_filled` / `no_advice_needed`）。
+  8. 18:00 导出「跟价建议清单 CSV」与「坏快照隔离台账 CSV」给店长群，附券后 1/2/3 件价格、命中组合与每条隔离的原因→更正→结果。
+  9. 20:00 晚班运营再跑一次测算，对比早晚价差，审计日志留痕。
 
 ## 2. 角色与权限
 
@@ -31,16 +32,17 @@
 
 密码统一 `Demo@2026`。低权角色调用高权接口返回**真实 HTTP 403**（`viewer` 写配置/导出/审计、`analyst` 审批/导出/审计），无 token 401，非法参数 422，重复自然键 409。
 
-## 3. 功能模块（6 个业务模块）
+## 3. 功能模块（7 个业务模块）
 
 | # | 模块 | 对应页面 | 后端 services + controller | 主要 API |
 |---|---|---|---|---|
 | ① | 竞品店铺与 SKU 价格口径维护（成本/底价/目标毛利/对标货号） | `#/catalog` | `competitor_service` + `competitor_controller`；`sku_service` + `sku_controller` | `GET/POST /api/competitors`、`PATCH /api/competitors/{id}`、`GET/POST /api/skus`、`GET/PATCH /api/skus/{id}` |
-| ② | 抓价任务与快照入库（回放 RPA 抓价、手工补录、按日期/店铺/类目检索） | `#/snapshots` | `snapshot_service` + `snapshot_controller` | `GET /api/snapshots`、`GET /api/snapshots/{id}`、`POST /api/snapshots` |
+| ② | 抓价任务与快照入库（回放 RPA 抓价、手工补录、按日期/店铺/类目检索；坏快照照样入库不丢） | `#/snapshots` | `snapshot_service` + `snapshot_controller` | `GET /api/snapshots`、`GET /api/snapshots/{id}`、`POST /api/snapshots` |
 | ③ | 券后价还原（算法 A，3 个件数档位 + 命中组合说明） | `#/snapshots`（列表列 + 明细抽屉） | `services/effective_price.py` + `pricing_service` | `POST /api/runs`（回放当日快照并重算）、`GET /api/snapshots/{id}`（`effective` 明细） |
-| ④ | 跟价规则与建议（算法 B：P25 锚点、成本底线、底价硬约束） | `#/advices`、`#/catalog` | `rule_service` + `follow_advice.py` + `pricing_service` + `advice_controller` | `GET/POST /api/rules`、`PATCH /api/rules/{id}`、`POST /api/runs`、`GET /api/advices` |
-| ⑤ | 审批与改价（批准/驳回、核定改价、审批人留痕） | `#/advices`（明细抽屉） | `advice_service` + `advice_controller` | `PATCH /api/advices/{id}/decision` |
-| ⑥ | 报表导出与值班盘点（建议/快照/运行三张 CSV、总览 KPI） | `#/exports`、`#/overview` | `export_service` + `export_controller`；`overview_service` | `GET /api/exports/advices.csv`、`/snapshots.csv`、`/runs.csv`、`GET /api/overview` |
+| ④ | 坏快照隔离与更正重试（原输入留档、失败原因、按正确条款更正、重试闭环追溯） | `#/quarantine` | `quarantine_service` + `quarantine_controller` | `GET /api/quarantines`、`GET /api/quarantines/stats`、`GET /api/quarantines/{id}`、`PATCH /api/quarantines/{id}/correct`、`GET /api/exports/quarantines.csv` |
+| ⑤ | 跟价规则与建议（算法 B：P25 锚点、成本底线、底价硬约束；合格建议不重算、缺的只补一次） | `#/advices`、`#/catalog` | `rule_service` + `follow_advice.py` + `pricing_service` + `advice_controller` | `GET/POST /api/rules`、`PATCH /api/rules/{id}`、`POST /api/runs`、`GET /api/advices` |
+| ⑥ | 审批与改价（批准/驳回、核定改价、审批人留痕） | `#/advices`（明细抽屉） | `advice_service` + `advice_controller` | `PATCH /api/advices/{id}/decision` |
+| ⑦ | 报表导出与值班盘点（建议/快照/隔离/运行四张 CSV、总览 KPI 与输入→隔离→缺口→建议数量核对） | `#/exports`、`#/overview` | `export_service` + `export_controller`；`overview_service` | `GET /api/exports/advices.csv`、`/snapshots.csv`、`/quarantines.csv`、`/runs.csv`、`GET /api/overview` |
 
 横切能力（不计入业务模块）：JWT 三角色鉴权、审计日志（`GET /api/audit`，仅 admin）、Redis 固定窗口限流、worker 心跳。
 
@@ -135,7 +137,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 ```text
 backend/
   src/{config,constants,controllers,middlewares,models,routes,schemas,services,utils}
-  src/services/{effective_price,follow_advice,pricing_service,...}.py   # 两个算法是纯函数
+  src/services/{effective_price,follow_advice,pricing_service,quarantine_service,...}.py  # 两个算法是纯函数，隔离服务管闭环
   scripts/{seed_demo.py,demo_config.py,worker_healthcheck.sh}
   migrations/001_core_tables.sql   tests/
 frontend/site/
@@ -147,17 +149,26 @@ frontend/site/
 
 见 `.env.example`：`COMPOSE_PROJECT_NAME`、`FRONTEND_PORT=18202`、`BACKEND_PORT=19202`、`DB_PORT=17702`、`DB_*`、`JWT_SECRET`、`REDIS_URL`、`SEED_DEMO`、`RATE_LIMIT_*`、`APP_TIMEZONE_OFFSET_MINUTES=480`。
 
-## 10. 数据模型（5 个领域实体）
+## 10. 数据模型（6 个领域实体）
 
 | 实体 | 表 | 关键字段 | 自然键 |
 |---|---|---|---|
 | 竞品店铺 `Competitor` | `competitors` | code、name、platform、shop_url、capture_config、last_captured_at | `code` |
 | 自有 SKU `Sku` | `skus` | sku_code、name、category、competitor_id、cost、floor_price、target_margin_pct、current_price | `sku_code` |
 | 抓价快照 `Snapshot` | `snapshots` | sku_id、captured_on、page_price、满减/店铺券/平台券/会员折扣、effective(算法 A) | `(sku_id, captured_on)` |
+| 坏快照隔离单 `SnapshotQuarantine` | `snapshot_quarantines` | snapshot_id、sku_id、captured_on、raw_snapshot（原输入留档）、failure_reason、status、outcome、corrected_snapshot、advice_id、retry_count | `snapshot_id` / `(sku_id, captured_on)` |
 | 跟价规则 `Rule` | `rules` | code、scope_kind/scope_value（sku>category>competitor>global）、strategy、target_margin_pct、max_drop_pct、priority | `code` |
 | 跟价建议 `Advice` | `advices` | run_id、sku_id、P10/P25/P50、suggested_price、margin_pct、gap_pct、severity、status、approver | `(run_id, sku_id)` |
 
-另有执行实体 `Run`（一次测算）与横切的 `User` / `AuditLog`。seed 口径：6 竞品 / 320 SKU / 960 快照（320×3 天）/ 5 条规则 / 1 次测算 → 42 条建议（high 9 / medium 13 / low 20）。
+另有执行实体 `Run`（一次测算）与横切的 `User` / `AuditLog`。seed 口径：6 竞品 / 320 SKU / 960 快照（320×3 天）/ 5 条规则 / 1 次测算 → 42 条建议（high 9 / medium 13 / low 20），seed 数据全部合法、无隔离单。
+
+### 10.1 坏快照隔离与重试幂等口径
+
+- **原输入不丢**：坏快照行照常保留；隔离单 `raw_snapshot` 独立留档一份原始券条款，更正只更新快照行与 `corrected_snapshot`，永不覆盖 `raw_snapshot`。
+- **同货号当天锁死**：`(sku_id, captured_on)` 唯一，同一货号当天只维护一条未闭环隔离单；当日快照未过算法 A 的货号不进算法 B（`locked_sku_ids`），计入 `missing_advice_skus`，其余货号建议照常发布。
+- **状态机**：`open`（待更正）→ `corrected`（已更正待重试）→ `resolved`（闭环：`advice_filled` 补出建议 / `no_advice_needed` 规则判定无需建议）；更正后仍非法则 `re_isolated` + `still_invalid`，历史更正记录保留。
+- **重试只补一次**：`compute_run` 按 `seed_key` 复用同一 Run 重新执行；`execute` 跳过运行内已有建议的 SKU（`skipped_existing_advices`），只为缺口补单（`new_advices`），重复重跑建议数恒定、隔离单不堆积。
+- **可追溯**：每条隔离单带 `run_id` / `last_run_id` / `advice_id`，页面与 `quarantines.csv` 都能从失败原因查到更正条款与闭环结果。
 
 ## 11. 共享枚举出现位置
 
@@ -171,6 +182,7 @@ frontend/site/
 | 审批状态 `pending/approved/rejected` | `enums.py`（`AdviceStatus`） | `config.js` → `ENUMS.adviceStatus` / `statusTone()` |
 | 建议动作 `follow/hold/raise` | `enums.py`（`AdviceAction`） | `config.js` → `ENUMS.action` |
 | 运行状态 / 触发方式 | `enums.py`（`RunStatus` / `TriggerKind`） | `config.js` → `ENUMS.runStatus` / `ENUMS.trigger` |
+| 隔离状态 / 闭环结果 | `enums.py`（`QuarantineStatus` / `QuarantineOutcome`） | `config.js` → `ENUMS.quarantineStatus` / `ENUMS.quarantineOutcome` |
 
 ## 12. Docker 说明
 
